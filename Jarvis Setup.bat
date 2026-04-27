@@ -1,117 +1,150 @@
-@ECHO OFF
-TITLE Jarvis-MK37 Auto-Setup + Launch (No Admin)
-COLOR 0A
-MODE CON: COLS=100 LINES=40
+@echo off
+title Jarvis MK37 Auto-Installer
+chcp 65001 >nul
 
-ECHO.
-ECHO ======================================================
-ECHO    Jarvis-MK37 Auto-Setup - NO ADMIN NEEDED
-ECHO ======================================================
-ECHO.
-
-:: Create target directory in user folder
-SET "TARGET=%USERPROFILE%\Jarvis-MK37"
-IF EXIST "%TARGET%" (
-    ECHO [INFO] Mazu starou instalaci...
-    RD /S /Q "%TARGET%"
+:: --- KONTROLA ADMINISTRÁTORA ---
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [!] Tento skript MUSÍŠ spustit jako Správce!
+    echo [!] Klikni na soubor pravým tlačítkem a zvol "Spustit jako správce".
+    echo.
+    pause
+    exit /b 1
 )
-MKDIR "%TARGET%"
-CD /D "%TARGET%"
 
-:: Check if Git is available
-ECHO [1/5] Checking installed tools...
-WHERE git >NUL 2>NUL
-IF %ERRORLEVEL% NEQ 0 (
-    ECHO [INFO] Git nenalezen - stahuji portable Git...
-    POWERSHELL -Command "Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/PortableGit-2.45.2-64-bit.7z.exe' -OutFile '%TARGET%\PortableGit.exe' -UseBasicParsing"
-    IF NOT EXIST "%TARGET%\PortableGit.exe" (
-        ECHO [ERROR] Stazeni Git selhalo! Zkontroluj internet.
-        PAUSE
-        EXIT /B 1
+echo ===================================================
+echo   Vítejte v automatickém instalátoru Jarvis MK37   
+echo ===================================================
+echo.
+
+:: --- 1. INSTALACE GITU ---
+echo [1/8] Kontrola a instalace Gitu...
+git --version >nul 2>&1
+if %errorLevel% neq 0 (
+    echo Git nenalezen. Pokouším se nainstalovat přes winget...
+    winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
+    
+    if %errorLevel% neq 0 (
+        echo Winget selhal, stahuji Git ručně přes curl...
+        curl -L -o git_installer.exe https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe
+        echo Instaluji Git (může to chvíli trvat)...
+        git_installer.exe /VERYSILENT /NORESTART
+        del git_installer.exe
     )
-    ECHO [INFO] Rozbaluji Git...
-    START /WAIT "" "%TARGET%\PortableGit.exe" -o"%TARGET%\git" -y
-    SET "PATH=%TARGET%\git\bin;%PATH%"
-    DEL "%TARGET%\PortableGit.exe"
+    :: Přidání gitu do PATH pro tuto běžící relaci
+    set "PATH=%PATH%;C:\Program Files\Git\cmd"
+) else (
+    echo [OK] Git je již nainstalován.
 )
 
-WHERE python >NUL 2>NUL
-IF %ERRORLEVEL% NEQ 0 (
-    ECHO [INFO] Python nenalezen - stahuji portable Python...
-    POWERSHELL -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip' -OutFile '%TARGET%\python.zip' -UseBasicParsing"
-    IF NOT EXIST "%TARGET%\python.zip" (
-        ECHO [ERROR] Stazeni Pythonu selhalo!
-        PAUSE
-        EXIT /B 1
+:: --- 2. INSTALACE PYTHONU 3.11.9 ---
+echo.
+echo [2/8] Kontrola a instalace Pythonu 3.11.9...
+
+set "PYTHON_EXE="
+
+:: Zkusíme najít, zda už 3.11 neběží v PATH
+where python >nul 2>&1
+if %errorLevel% equ 0 (
+    for /f "tokens=2" %%i in ('python -V') do set "PY_VER=%%i"
+    echo %PY_VER% | find "3.11." >nul
+    if %errorLevel% equ 0 (
+        set "PYTHON_EXE=python"
+        echo [OK] Python 3.11 je již aktivní v PATH.
     )
-    ECHO [INFO] Rozbaluji Python...
-    POWERSHELL -Command "Expand-Archive -Path '%TARGET%\python.zip' -DestinationPath '%TARGET%\python' -Force"
-    SET "PATH=%TARGET%\python;%PATH%"
-    DEL "%TARGET%\python.zip"
-    :: Stahnout a pridat get-pip.py
-    POWERSHELL -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%TARGET%\get-pip.py' -UseBasicParsing"
-    python "%TARGET%\get-pip.py" --no-warn-script-location
 )
 
-ECHO [2/5] Cloning Jarvis-MK37...
-git clone https://github.com/FatihMakes/Jarvis-MK37.git "%TARGET%\repo"
-XCOPY "%TARGET%\repo\*" "%TARGET%" /E /I /Y >NUL
-RD /S /Q "%TARGET%\repo"
-
-ECHO [3/5] Installing PyAudio + numpy (wheels - no build errors)...
-python -m pip install --upgrade pip --no-warn-script-location
-python -m pip install --only-binary=all --no-warn-script-location pyaudio numpy
-IF %ERRORLEVEL% NEQ 0 (
-    ECHO [WARNING] Prvni pokus selhal, zkousim znovu...
-    python -m pip install --only-binary=all pyaudio numpy wheel
+:: Pokud není v PATH, zkusíme prohledat klasické instalační cesty
+if "%PYTHON_EXE%"=="" (
+    if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python311\python.exe" (
+        set "PYTHON_EXE=%USERPROFILE%\AppData\Local\Programs\Python\Python311\python.exe"
+    ) else if exist "C:\Program Files\Python311\python.exe" (
+        set "PYTHON_EXE=C:\Program Files\Python311\python.exe"
+    )
 )
 
-ECHO [4/5] Installing dependencies from requirements.txt...
-python -m pip install -r requirements.txt --no-warn-script-location
-IF %ERRORLEVEL% NEQ 0 (
-    ECHO [WARNING] Nektere balicky selhaly, zkousim jednotlive...
-    python -m pip install --only-binary=all pillow requests beautifulsoup4 google-generativeai google-genai keyboard
+:: Pokud Python 3.11 stále nemáme, stáhneme ho a nainstalujeme
+if "%PYTHON_EXE%"=="" (
+    echo Stahuji Python 3.11.9...
+    curl -L -o python_installer.exe https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
+    echo Instaluji Python 3.11.9 (tichý režim)...
+    python_installer.exe /quiet PrependPath=1 Include_test=0
+    del python_installer.exe
+    
+    :: Znovu zkusíme nastavit cestu k nově nainstalovanému Pythonu
+    if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python311\python.exe" (
+        set "PYTHON_EXE=%USERPROFILE%\AppData\Local\Programs\Python\Python311\python.exe"
+    ) else if exist "C:\Program Files\Python311\python.exe" (
+        set "PYTHON_EXE=C:\Program Files\Python311\python.exe"
+    ) else (
+        echo [ERROR] Nepodařilo se detekovat Python ani po instalaci!
+        pause
+        exit /b 1
+    )
 )
 
-ECHO [5/5] Installing Playwright + Chromium...
-python -m playwright install chromium
-IF %ERRORLEVEL% NEQ 0 (
-    ECHO [WARNING] Playwright selhal, zkousim s pip...
-    python -m pip install playwright
-    python -m playwright install chromium
+:: Launcher kontroluje, že opravdu běží pod verzí 3.11
+"%PYTHON_EXE%" -V | find "3.11." >nul
+if %errorLevel% neq 0 (
+    echo [ERROR] Detekovaný Python není verze 3.11!
+    "%PYTHON_EXE%" -V
+    pause
+    exit /b 1
+) else (
+    echo [OK] Ověřeno: Používám Python 3.11.
 )
 
-ECHO.
-ECHO ======================================================
-ECHO    Jarvis-MK37 READY - No Admin Required
-ECHO ======================================================
-ECHO.
-ECHO Testing PyAudio...
-python -c "import pyaudio; print('[OK] PyAudio:', pyaudio.get_portaudio_version_text())" 2>NUL
-IF %ERRORLEVEL% NEQ 0 ECHO [WARNING] PyAudio neni k dispozici
-ECHO Testing numpy...
-python -c "import numpy; print('[OK] numpy:', numpy.__version__)" 2>NUL
-IF %ERRORLEVEL% NEQ 0 ECHO [WARNING] numpy neni k dispozici
-ECHO.
-ECHO Spoustim Jarvis-MK37...
-TIMEOUT /T 2 /NOBREAK >NUL
+:: --- 3. AKTUALIZACE PIPU ---
+echo.
+echo [3/8] Aktualizuji pip...
+"%PYTHON_EXE%" -m pip install --upgrade pip
 
-:LAUNCH
-CLS
-ECHO [LAUNCH] python main.py
-ECHO.
-python main.py
+:: --- 4. INSTALACE PYAUDIO A NUMPY ---
+echo.
+echo [4/8] Instaluji PyAudio a NumPy (preferuji hotové binárky/wheely)...
 
-ECHO.
-ECHO ======================================================
-ECHO    Jarvis-MK37 ukoncen
-ECHO ======================================================
-ECHO.
-ECHO [R] - Restart
-ECHO [X] - Konec
-ECHO.
-SET /P choice="Volba: "
-IF /I "%choice%"=="R" GOTO LAUNCH
+:: Pokus o instalaci s --only-binary pro zamezení chybám při kompilaci
+"%PYTHON_EXE%" -m pip install pyaudio numpy --only-binary=:all:
+if %errorLevel% neq 0 (
+    echo [WARNING] Instalace přes --only-binary selhala. Zkouším standardní fallback...
+    "%PYTHON_EXE%" -m pip install pyaudio numpy
+) else (
+    echo [OK] PyAudio a NumPy nainstalovány z binárních wheelů bez build chyb.
+)
 
-ECHO [DONE] Hotovo.
-PAUSE
+:: --- 5. TEST PYAUDIO A NUMPY ---
+echo.
+echo [5/8] Testuji funkčnost modulů...
+"%PYTHON_EXE%" -c "import pyaudio; import numpy; print('Test úspěšný: Moduly se načetly.')" >nul 2>&1
+if %errorLevel% equ 0 (
+    echo [OK] PyAudio + NumPy: OK
+) else (
+    echo [WARNING] PyAudio + NumPy: TEST SELHAL (Chybějící knihovny nebo ovladače zvuku).
+)
+
+:: --- 6. KLONOVÁNÍ REPOZITÁŘE ---
+echo.
+echo [6/8] Klonuji repozitář Jarvis-MK37...
+git clone https://github.com/FatihMakes/Jarvis-MK37
+cd Jarvis-MK37
+
+:: --- 7. INSTALACE REQUIREMENTS ---
+echo.
+echo [7/8] Instaluji balíčky z requirements.txt...
+"%PYTHON_EXE%" -m pip install -r requirements.txt
+
+:: --- 8. INSTALACE PLAYWRIGHT CHROMIUM ---
+echo.
+echo [8/8] Instaluji prohlížeč Chromium pro Playwright...
+"%PYTHON_EXE%" -m playwright install chromium
+
+:: --- FINÁLNÍ SPUŠTĚNÍ ---
+echo.
+echo ===================================================
+echo   Vše připraveno! Spouštím aplikaci Jarvis MK37...  
+echo ===================================================
+echo.
+
+"%PYTHON_EXE%" main.py
+
+pause
